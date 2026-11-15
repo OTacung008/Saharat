@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="th">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -415,14 +415,15 @@ let cells;
 }
 
 /* ================= captions ================= */
+// timed to voiceover.mp3 (played with a 0.4s delay)
 const CAPS = [
-  [0.15, 3.2, 'นี่คือสิ่งที่เกิดขึ้น', 'เมื่อยุงกัดคุณ'],
-  [3.2, 6.2, 'ยุงใช้ปากแหลมเหมือนเข็ม', 'เจาะทะลุผิวหนัง'],
-  [6.2, 8.8, 'แล้วควานหา', 'เส้นเลือดฝอย'],
-  [8.8, 11.0, 'ปล่อยน้ำลายเข้าไป', 'ให้เลือดไม่แข็งตัว'],
-  [11.0, 14.2, 'จากนั้นก็ดูดเลือด', 'ขึ้นไปเรื่อย ๆ'],
-  [14.2, 16.6, 'จนท้องป่อง', 'หนักกว่าตัวเองได้ถึง 3 เท่า!'],
-  [16.6, 20.1, 'ร่างกายแพ้น้ำลายยุง', 'เกิดเป็นตุ่มแดง และคัน!'],
+  [0.15, 3.15, 'THIS IS WHAT HAPPENS', 'WHEN A MOSQUITO BITES YOU'],
+  [3.15, 6.07, 'ITS NEEDLE-LIKE MOUTH', 'PIERCES YOUR SKIN'],
+  [6.07, 8.8, 'PROBING AROUND FOR', 'A BLOOD VESSEL'],
+  [8.8, 11.2, 'IT INJECTS SALIVA', 'SO YOUR BLOOD WON\'T CLOT'],
+  [11.2, 13.0, 'AND STARTS', 'SUCKING IT UP'],
+  [13.0, 15.85, 'UP TO 3X', 'ITS OWN WEIGHT!'],
+  [15.85, 20.1, 'LEAVING A RED,', 'ITCHY BUMP!'],
 ];
 const l1 = document.getElementById('l1'), l2 = document.getElementById('l2');
 let capIdx = -2;
