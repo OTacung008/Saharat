@@ -1,0 +1,575 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mosquito Bite 3D</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Kanit:wght@700;800&display=swap" rel="stylesheet">
+<style>
+  :root { --bg: #0b0b0d; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
+  #stage {
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    width: min(100vw, 56.25vh); height: min(100vh, 177.78vw);
+    container-type: size; overflow: hidden; background: #8cc8f5;
+  }
+  #c { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #vignette { position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse 85% 70% at 50% 48%, transparent 55%, rgba(0,0,0,.38) 100%); }
+  #cap { position: absolute; left: 4cqw; right: 4cqw; top: 62cqh; text-align: center; pointer-events: none;
+    font-family: 'Kanit', 'Loma', sans-serif; font-weight: 800; line-height: 1.12; }
+  #cap .ln { display: block; font-size: 8.6cqw; color: #fff; transform-origin: 50% 70%;
+    -webkit-text-stroke: 1.5cqw #000; paint-order: stroke fill;
+    text-shadow: 0 .8cqw 1.4cqw rgba(0,0,0,.55); white-space: nowrap; }
+  #cap .ln.hl { color: #ffd60a; }
+  #bar { position: absolute; left: 0; top: 0; height: .6cqh; background: #ff3b3b; width: 0; }
+  #hint { position: absolute; bottom: 2.4cqh; width: 100%; text-align: center; color: rgba(255,255,255,.75);
+    font: 600 3cqw/1 'Kanit', sans-serif; pointer-events: none; transition: opacity .4s; }
+  .render #bar, .render #hint { display: none; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="stage">
+  <canvas id="c"></canvas>
+  <div id="vignette"></div>
+  <div id="cap"><span class="ln" id="l1"></span><span class="ln hl" id="l2"></span></div>
+  <div id="bar"></div>
+  <div id="hint">แตะเพื่อหยุด / เล่นต่อ</div>
+</div>
+<script type="module">
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+const RENDER = new URLSearchParams(location.search).has('render');
+if (RENDER) document.body.classList.add('render');
+const DUR = 20;
+
+/* ---------------- helpers ---------------- */
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const lerp = (a, b, t) => a + (b - a) * t;
+const ss = (a, b, x) => { const t = clamp((x - a) / (b - a)); return t * t * (3 - 2 * t); };
+const easeOutBack = (t) => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * (t - 1) ** 3 + c1 * (t - 1) ** 2; };
+const V = (x, y, z) => new THREE.Vector3(x, y, z);
+function rng(seed) { return () => { seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+const lerpV = (a, b, t) => a.clone().lerp(b, t);
+
+function makeNoise(seed) {
+  const R = rng(seed), grids = {};
+  const grid = (n) => grids[n] || (grids[n] = Float32Array.from({ length: n * n }, R));
+  const vn = (u, v, n) => {
+    const g = grid(n), x = u * n, y = v * n, xi = Math.floor(x), yi = Math.floor(y);
+    let xf = x - xi, yf = y - yi; xf = xf * xf * (3 - 2 * xf); yf = yf * yf * (3 - 2 * yf);
+    const i0 = ((xi % n) + n) % n, j0 = ((yi % n) + n) % n, i1 = (i0 + 1) % n, j1 = (j0 + 1) % n;
+    const a = g[j0 * n + i0], b = g[j0 * n + i1], c = g[j1 * n + i0], d = g[j1 * n + i1];
+    return lerp(lerp(a, b, xf), lerp(c, d, xf), yf);
+  };
+  return (u, v, base = 4, oct = 5) => { let s = 0, amp = .5, n = base, tot = 0; for (let o = 0; o < oct; o++) { s += vn(u, v, n) * amp; tot += amp; amp *= .5; n *= 2; } return s / tot; };
+}
+function canvasTex(size, w, h, painter, srgb = true) {
+  const c = document.createElement('canvas'); c.width = w || size; c.height = h || size;
+  painter(c.getContext('2d'), c.width, c.height);
+  const t = new THREE.CanvasTexture(c); if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = 8; return t;
+}
+function pixelTex(size, fn, srgb = true) {
+  return canvasTex(size, 0, 0, (ctx, w, h) => {
+    const img = ctx.createImageData(w, h), d = img.data;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = (y * w + x) * 4; const [r, g, b, a = 255] = fn(x / w, y / h); d[i] = r; d[i + 1] = g; d[i + 2] = b; d[i + 3] = a; }
+    ctx.putImageData(img, 0, 0);
+  }, srgb);
+}
+function segment(a, b, r0, r1, mat, seg = 8) {
+  const d = b.clone().sub(a), len = d.length();
+  const g = new THREE.CylinderGeometry(r1, r0, len, seg, 1); g.translate(0, len / 2, 0);
+  const m = new THREE.Mesh(g, mat); m.position.copy(a); m.quaternion.setFromUnitVectors(V(0, 1, 0), d.normalize());
+  m.castShadow = true; return m;
+}
+
+/* ---------------- renderer ---------------- */
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: RENDER });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+const camera = new THREE.PerspectiveCamera(36, 9 / 16, 0.01, 100);
+const pmrem = new THREE.PMREMGenerator(renderer);
+const envTex = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+const skyTex = canvasTex(0, 4, 512, (ctx, w, h) => {
+  const g = ctx.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, '#2f86e0'); g.addColorStop(.55, '#7cbcf2'); g.addColorStop(1, '#cfe9ff');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+});
+function makeScene(shadowSpan, target) {
+  const s = new THREE.Scene();
+  s.background = skyTex; s.environment = envTex; s.environmentIntensity = .45;
+  s.add(new THREE.HemisphereLight(0xd6ecff, 0x8a5f48, .9));
+  const sun = new THREE.DirectionalLight(0xfff1de, 2.6);
+  sun.position.copy(target).add(V(2.2, 5, 2.6)); sun.target.position.copy(target);
+  sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
+  const sc = sun.shadow.camera; sc.left = sc.bottom = -shadowSpan; sc.right = sc.top = shadowSpan; sc.near = .5; sc.far = 15;
+  sun.shadow.bias = -.0003; sun.shadow.normalBias = .01; sun.shadow.radius = 3;
+  const rim = new THREE.DirectionalLight(0xbfe0ff, 1.4); rim.position.copy(target).add(V(-2.5, 2, -4));
+  s.add(sun, sun.target, rim);
+  return s;
+}
+
+/* ---------------- textures ---------------- */
+const nz = makeNoise(7);
+const skinMap = pixelTex(512, (u, v) => {
+  const lo = nz(u, v, 3, 4), hi = nz(u, v, 64, 2), fr = nz(u + .3, v + .7, 24, 2);
+  const k = (lo - .5) * 26 + (hi - .5) * 10 - (fr > .74 ? 22 : 0);
+  return [218 + k, 150 + k * .9, 108 + k * .8];
+});
+const skinBump = pixelTex(512, (u, v) => {
+  const a = nz(u, v, 96, 3), p = nz(u + .5, v, 160, 1); const k = a * 200 - (p > .78 ? 90 : 0);
+  return [k, k, k];
+}, false);
+skinMap.repeat.set(3, 7); skinBump.repeat.set(3, 7);
+
+const stripeTex = canvasTex(0, 16, 256, (ctx, w, h) => {
+  ctx.fillStyle = '#1b130e'; ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#d8d2c8';
+  for (let i = 1; i < 8; i++) ctx.fillRect(0, i * h / 8 - h / 48, w, h / 30);
+});
+const legTex = stripeTex.clone(); legTex.repeat.set(1, 2.5); legTex.needsUpdate = true;
+
+/* ---------------- skin material with bite shader ---------------- */
+const biteU = { uBite: { value: V(0, 0, 0) }, uBump: { value: 0 }, uRed: { value: 0 }, uDot: { value: 0 } };
+function makeSkinMat(withBite) {
+  const m = new THREE.MeshPhysicalMaterial({
+    map: skinMap, bumpMap: skinBump, bumpScale: .6, roughness: .52,
+    sheen: .3, sheenColor: new THREE.Color(0xffb08a), sheenRoughness: .55, clearcoat: .08, clearcoatRoughness: .6,
+  });
+  if (!withBite) return m;
+  m.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, biteU);
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', `#include <common>
+        uniform vec3 uBite; uniform float uBump; varying float vBiteD;
+        float bumpH(vec3 p){ float d = distance(p, uBite); return uBump * 0.15 * exp(-d*d/0.05); }`)
+      .replace('#include <beginnormal_vertex>', `vec3 objectNormal = vec3(normal);
+        #ifdef USE_TANGENT
+          vec3 objectTangent = vec3(tangent.xyz);
+        #endif
+        { vec3 dp = position - uBite; vec3 gr = bumpH(position) * (-2.0 * dp / 0.05);
+          gr -= dot(gr, objectNormal) * objectNormal; objectNormal = normalize(objectNormal - gr); }`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        transformed += normal * bumpH(position); vBiteD = distance(position, uBite);`);
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', `#include <common>
+        uniform float uRed; uniform float uDot; varying float vBiteD;`)
+      .replace('#include <map_fragment>', `#include <map_fragment>
+        float redM = uRed * exp(-vBiteD*vBiteD/0.06);
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.80,0.16,0.15), clamp(redM*1.1, 0.0, 0.9));
+        float dotM = uDot * (1.0 - smoothstep(0.005, 0.013, vBiteD));
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.32,0.02,0.03), dotM);`);
+  };
+  return m;
+}
+
+/* ================= SCENE A : arm + mosquito ================= */
+const R0 = .95;
+const armR = (z) => .95 + .06 * (z / 7) + .025 * Math.sin(z * .9);
+const BITE = V(0, armR(0), 0);
+const sceneA = makeScene(1.6, BITE);
+sceneA.fog = new THREE.Fog(0xa9d5fb, 5, 15);
+
+{ // arm
+  const pts = [];
+  for (let y = -7; y <= 7.0001; y += .05) {
+    let r = armR(y); const e = Math.abs(y) - 6.4;
+    if (e > 0) r *= Math.sqrt(Math.max(0, 1 - (e / .6) ** 2));
+    pts.push(new THREE.Vector2(Math.max(r, .001), y));
+  }
+  const g = new THREE.LatheGeometry(pts, 180);
+  const arm = new THREE.Mesh(g, makeSkinMat(true));
+  arm.rotation.x = Math.PI / 2; arm.receiveShadow = true; sceneA.add(arm);
+  arm.updateMatrixWorld(); biteU.uBite.value.copy(arm.worldToLocal(BITE.clone()));
+
+  // arm hairs
+  const R = rng(3), n = 520, hg = new THREE.CylinderGeometry(.0016, .0028, 1, 4, 1); hg.translate(0, .5, 0);
+  const hairs = new THREE.InstancedMesh(hg, new THREE.MeshStandardMaterial({ color: 0x3a2618, roughness: .7 }), n);
+  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), s = V(1, 1, 1);
+  let k = 0;
+  while (k < n) {
+    const z = (R() - .5) * 8, phi = (R() - .5) * 2.6, r = armR(z);
+    const p = V(r * Math.sin(phi), r * Math.cos(phi), z);
+    if (p.distanceTo(BITE) < .38) continue;
+    const nrm = V(Math.sin(phi), Math.cos(phi), 0);
+    const dir = V((R() - .5) * .5, 0, -1).addScaledVector(nrm, .25 + R() * .2).normalize();
+    q.setFromUnitVectors(V(0, 1, 0), dir); s.set(1, .05 + R() * .07, 1);
+    hairs.setMatrixAt(k++, m4.compose(p, q, s));
+  }
+  hairs.castShadow = true; sceneA.add(hairs);
+}
+
+/* ---------------- mosquito ---------------- */
+function wingTexture() {
+  return canvasTex(0, 512, 128, (ctx, w, h) => {
+    const P = (x, y) => [x / .3 * w, (1 - (y + .03) / .08) * h];
+    const path = () => { ctx.beginPath(); ctx.moveTo(...P(0, 0)); ctx.bezierCurveTo(...P(.05, .045), ...P(.22, .05), ...P(.3, .012)); ctx.bezierCurveTo(...P(.27, -.03), ...P(.08, -.03), ...P(0, 0)); };
+    path(); ctx.fillStyle = 'rgba(225,235,255,.30)'; ctx.fill();
+    ctx.save(); path(); ctx.clip();
+    ctx.strokeStyle = 'rgba(55,40,30,.85)'; ctx.lineWidth = 2.2;
+    for (const off of [.03, .018, .006, -.006, -.016]) {
+      ctx.beginPath(); ctx.moveTo(...P(0, 0)); ctx.quadraticCurveTo(...P(.15, off * 1.3), ...P(.31, off * .9)); ctx.stroke();
+    }
+    ctx.lineWidth = 1.2; for (let i = 0; i < 6; i++) { const x = .12 + i * .03; ctx.beginPath(); ctx.moveTo(...P(x, .03)); ctx.lineTo(...P(x + .01, -.02)); ctx.stroke(); }
+    ctx.restore();
+    path(); ctx.strokeStyle = 'rgba(70,55,45,.7)'; ctx.lineWidth = 3; ctx.stroke();
+  });
+}
+const WING_TEX = wingTexture();
+
+function makeMosquito(surfR) {
+  const root = new THREE.Group(), body = new THREE.Group(); root.add(body);
+  const dark = new THREE.MeshPhysicalMaterial({ color: 0x2e2118, roughness: .5, clearcoat: .6, clearcoatRoughness: .35, sheen: .6, sheenColor: new THREE.Color(0x8a7a66) });
+  const legMat = new THREE.MeshPhysicalMaterial({ map: legTex, roughness: .5, clearcoat: .4 });
+  const eyeMat = new THREE.MeshPhysicalMaterial({ color: 0x140a0a, roughness: .22, clearcoat: 1, bumpMap: skinBump, bumpScale: 2 });
+
+  const thorax = new THREE.Mesh(new THREE.SphereGeometry(.075, 40, 28), dark);
+  thorax.scale.set(1.3, 1.05, .95); thorax.position.set(0, .15, 0); thorax.castShadow = true; body.add(thorax);
+  const scut = new THREE.Mesh(new THREE.SphereGeometry(.03, 16, 12), new THREE.MeshStandardMaterial({ color: 0xd9d2c6, roughness: .6 }));
+  scut.scale.set(1.6, .25, .5); scut.position.set(.02, .224, 0); scut.rotation.z = -.2; body.add(scut);
+
+  const abdPivot = new THREE.Group(); abdPivot.position.set(-.07, .15, 0); abdPivot.rotation.z = -.16; body.add(abdPivot);
+  const abdMat = new THREE.MeshPhysicalMaterial({ map: stripeTex, roughness: .45, clearcoat: .5, clearcoatRoughness: .3, emissive: 0x9a0010, emissiveIntensity: 0 });
+  const abdomen = new THREE.Mesh(new THREE.SphereGeometry(.055, 48, 36), abdMat);
+  abdomen.rotation.z = Math.PI / 2; abdomen.position.x = -.16; abdomen.scale.set(1, 3, .9); abdomen.castShadow = true; abdPivot.add(abdomen);
+
+  const head = new THREE.Mesh(new THREE.SphereGeometry(.046, 32, 24), eyeMat);
+  head.position.set(.105, .142, 0); head.scale.set(.9, 1, 1.1); head.castShadow = true; body.add(head);
+
+  const probPivot = new THREE.Group(); probPivot.position.set(.14, .128, 0); body.add(probPivot);
+  const L = .18, pg = new THREE.CylinderGeometry(.0058, .0022, L, 10); pg.translate(0, -L / 2, 0);
+  const prob = new THREE.Mesh(pg, dark); prob.castShadow = true; probPivot.add(prob);
+  for (const s of [-1, 1]) { const pl = segment(V(.14, .13, s * .009), V(.175, .085, s * .012), .0045, .003, dark); body.add(pl); }
+  for (const s of [-1, 1]) { body.add(segment(V(.13, .17, s * .012), V(.2, .275, s * .055), .003, .0015, dark)); }
+
+  // legs (hind legs raised – classic Aedes pose)
+  const drop = (x) => surfR ? surfR - Math.sqrt(Math.max(0, surfR * surfR - x * x)) : 0;
+  const legs = [
+    [V(.04, .11, .03), V(.15, .23, .12), V(.25, .06, .2), V(.3, 0, .22)],
+    [V(0, .1, .04), V(.02, .23, .2), V(0, .06, .32), V(-.02, 0, .35)],
+    [V(-.03, .1, .03), V(-.13, .25, .16), V(-.3, .22, .24), V(-.42, .33, .2)],
+  ];
+  legs.forEach((pts, li) => {
+    for (const s of [-1, 1]) {
+      const p = pts.map((v) => V(v.x, v.y, v.z * s));
+      if (li < 2) { p[3].y -= drop(p[3].x); p[2].y -= drop(p[2].x) * .8; }
+      body.add(segment(p[0], p[1], .0075, .0055, legMat));
+      body.add(segment(p[1], p[2], .0055, .004, legMat));
+      body.add(segment(p[2], p[3], .004, .0025, legMat));
+      const kn = new THREE.Mesh(new THREE.SphereGeometry(.0065, 8, 6), dark); kn.position.copy(p[1]); body.add(kn);
+    }
+  });
+
+  // wings: 3 ghosts each for motion blur
+  const wg = (() => {
+    const sh = new THREE.Shape(); sh.moveTo(0, 0); sh.bezierCurveTo(.05, .045, .22, .05, .3, .012); sh.bezierCurveTo(.27, -.03, .08, -.03, 0, 0);
+    const g = new THREE.ShapeGeometry(sh, 24), pos = g.attributes.position, uv = g.attributes.uv;
+    for (let i = 0; i < pos.count; i++) uv.setXY(i, pos.getX(i) / .3, (pos.getY(i) + .03) / .08);
+    g.rotateX(-Math.PI / 2); return g;
+  })();
+  const wings = [];
+  for (const s of [-1, 1]) {
+    const pivot = new THREE.Group(); pivot.position.set(-.005, .205, s * .03); pivot.rotation.order = 'YZX'; body.add(pivot);
+    const ghosts = [-1, 0, 1].map((o) => {
+      const m = new THREE.Mesh(wg, new THREE.MeshPhysicalMaterial({ map: WING_TEX, transparent: true, side: THREE.DoubleSide, depthWrite: false, roughness: .15, iridescence: 1, iridescenceIOR: 1.5, iridescenceThicknessRange: [250, 650] }));
+      m.scale.z = -s; m.renderOrder = 5; pivot.add(m); return { m, o };
+    });
+    wings.push({ s, pivot, ghosts });
+  }
+  return { root, body, abdomen, abdMat, probPivot, wings };
+}
+const MS = 1.3;
+const mosq = makeMosquito(R0 / MS);
+mosq.root.scale.setScalar(MS);
+sceneA.add(mosq.root);
+
+function setWings(m, t, fly, k = 1) {
+  for (const w of m.wings) {
+    const restA = w.s * (Math.PI - .1), flyA = w.s * (Math.PI / 2 + .35);
+    w.pivot.rotation.y = -lerp(restA, flyA, fly);
+    const flapBase = Math.sin(t * 2 * Math.PI * 13) * .9;
+    for (const g of w.ghosts) {
+      const flap = lerp(.06, flapBase + g.o * .45, fly);
+      g.m.rotation.z = flap;
+      g.m.material.opacity = fly > .02 ? (g.o === 0 ? .7 : .45 * fly) * k : (g.o === 0 ? 1 : 0);
+      g.m.visible = g.m.material.opacity > .01;
+    }
+  }
+}
+
+/* ================= SCENE B : skin cross-section ================= */
+const VES_Y = -.85, VES_R = .28;
+const sceneB = makeScene(3, V(0, -.6, 0));
+sceneB.fog = new THREE.Fog(0xa9d5fb, 6, 16);
+const needle = new THREE.Group();
+const bloodCol = (() => { const g = new THREE.CylinderGeometry(.021, .021, 1, 16); g.translate(0, .5, 0); return new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0xb30d1c, roughness: .3, emissive: 0x400005 })); })();
+const saliva = [], suck = [];
+let cells;
+{
+  const W = 5, D = 4;
+  const epiFront = canvasTex(0, 64, 256, (ctx, w, h) => {
+    const g = ctx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, '#b77a58'); g.addColorStop(.12, '#e8b48e'); g.addColorStop(.55, '#f0c3a4'); g.addColorStop(.85, '#d98f80'); g.addColorStop(1, '#c97467');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+  });
+  epiFront.wrapT = THREE.ClampToEdgeWrapping;
+  const sideMat = new THREE.MeshStandardMaterial({ color: 0xe0a585, roughness: .6 });
+  const epi = new THREE.Mesh(new THREE.BoxGeometry(W, .16, D), [sideMat, sideMat, makeSkinMat(false), sideMat, new THREE.MeshStandardMaterial({ map: epiFront, roughness: .55 }), sideMat]);
+  epi.position.set(0, -.08, -D / 2); epi.receiveShadow = true; sceneB.add(epi);
+
+  const dermTex = canvasTex(512, 0, 0, (ctx, w, h) => {
+    ctx.fillStyle = '#ec9a92'; ctx.fillRect(0, 0, w, h); const R = rng(11);
+    for (let i = 0; i < 260; i++) {
+      ctx.strokeStyle = R() < .5 ? 'rgba(255,214,208,.35)' : 'rgba(190,90,90,.22)'; ctx.lineWidth = 1 + R() * 3;
+      const x = R() * w, y = R() * h; ctx.beginPath(); ctx.moveTo(x, y);
+      ctx.bezierCurveTo(x + 40, y + (R() - .5) * 40, x + 80, y + (R() - .5) * 40, x + 120, y + (R() - .5) * 30); ctx.stroke();
+    }
+  });
+  dermTex.repeat.set(2.5, 1);
+  const dermMat = new THREE.MeshPhysicalMaterial({ map: dermTex, roughness: .55, sheen: .5, sheenColor: new THREE.Color(0xffd0c8), clearcoat: .25 });
+  const derm = new THREE.Mesh(new THREE.BoxGeometry(W, 1.24, D), dermMat);
+  derm.position.set(0, -.16 - .62, -D / 2); derm.receiveShadow = true; sceneB.add(derm);
+
+  const fatMat = new THREE.MeshPhysicalMaterial({ color: 0xf6cf6a, roughness: .35, clearcoat: .7, clearcoatRoughness: .2, sheen: .4, sheenColor: new THREE.Color(0xfff2b0) });
+  const fat = new THREE.Mesh(new THREE.BoxGeometry(W, 1.3, D), fatMat); fat.position.set(0, -1.4 - .65, -D / 2 - .08); sceneB.add(fat);
+  const R = rng(5), lobN = 140;
+  const lobes = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 20, 14), fatMat, lobN);
+  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion();
+  for (let i = 0; i < lobN; i++) {
+    const r = .1 + R() * .1;
+    m4.compose(V((R() - .5) * W, -1.48 - R() * 1.2, -.06 + R() * .04), q, V(r, r * (.8 + R() * .3), r * .6)); lobes.setMatrixAt(i, m4);
+  }
+  lobes.receiveShadow = true; sceneB.add(lobes);
+
+  // blood vessel
+  const vg = new THREE.CylinderGeometry(VES_R, VES_R, W, 48, 1, true); vg.rotateZ(Math.PI / 2);
+  const vessel = new THREE.Mesh(vg, new THREE.MeshPhysicalMaterial({ color: 0xd2283a, transparent: true, opacity: .42, roughness: .2, clearcoat: 1, side: THREE.DoubleSide, depthWrite: false }));
+  vessel.position.set(0, VES_Y, 0); vessel.renderOrder = 3; sceneB.add(vessel);
+  const plasma = new THREE.Mesh(vg.clone(), new THREE.MeshStandardMaterial({ color: 0x7a0a12, side: THREE.BackSide, roughness: .6 }));
+  plasma.scale.set(1, .97, .97); plasma.position.copy(vessel.position); sceneB.add(plasma);
+
+  // RBC geometry
+  const prof = [], N = 18, CR = .07;
+  const h = (p) => CR * .5 * Math.sqrt(Math.max(0, 1 - p * p)) * (.21 + 2 * p * p - 1.12 * p ** 4);
+  for (let i = 0; i <= N; i++) { const p = i / N; prof.push(new THREE.Vector2(p * CR + 1e-4, -h(p))); }
+  for (let i = N; i >= 0; i--) { const p = i / N; prof.push(new THREE.Vector2(p * CR + 1e-4, h(p))); }
+  const rbcG = new THREE.LatheGeometry(prof, 28);
+  const rbcM = new THREE.MeshPhysicalMaterial({ color: 0xd0121f, roughness: .35, clearcoat: .6, sheen: .6, sheenColor: new THREE.Color(0xff6060) });
+  const CN = 80; cells = new THREE.InstancedMesh(rbcG, rbcM, CN);
+  const RC = rng(21);
+  cells.userData.p = Array.from({ length: CN }, () => ({ x0: RC() * 5, r: Math.sqrt(RC()) * .19, a: RC() * 6.28, sp: .38 + RC() * .2, ax: V(RC() - .5, RC() - .5, RC() - .5).normalize(), rs: (RC() - .5) * 3, ph: RC() * 6 }));
+  sceneB.add(cells);
+
+  // capillaries, nerve, hair follicles on the cut face
+  const tube = (pts, r, color) => {
+    const m = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 64, r, 10), new THREE.MeshPhysicalMaterial({ color, roughness: .35, clearcoat: .6 }));
+    m.castShadow = true; sceneB.add(m);
+  };
+  tube([V(-2.5, -.55, .01), V(-1.6, -.3, .02), V(-1.2, -.22, .02), V(-.9, -.45, .02), V(-.7, -.8, .01)], .025, 0xc0303c);
+  tube([V(.7, -.78, .01), V(.9, -.3, .02), V(1.2, -.24, .02), V(1.4, -.5, .02), V(2.5, -.4, .01)], .025, 0x6a3a8c);
+  tube([V(-2.5, -1.25, .02), V(-1.2, -1.15, .03), V(0, -1.28, .03), V(1.3, -1.12, .03), V(2.5, -1.22, .02)], .03, 0xf2d34a);
+  const hairMat = new THREE.MeshStandardMaterial({ color: 0x2a1a10, roughness: .6 });
+  for (const [x, ang] of [[-1.15, .45], [1.25, .5]]) {
+    const base = V(x, -1.05, .03), dir = V(Math.sin(ang), Math.cos(ang), 0);
+    sceneB.add(segment(base, base.clone().addScaledVector(dir, 2.4), .022, .015, hairMat));
+    const bulb = new THREE.Mesh(new THREE.SphereGeometry(.07, 16, 12), new THREE.MeshPhysicalMaterial({ color: 0xf4dcc8, roughness: .4, clearcoat: .5 }));
+    bulb.position.copy(base); bulb.scale.set(1, 1.3, .6); sceneB.add(bulb);
+  }
+
+  // needle (proboscis close-up), origin at tip
+  const sheathMat = new THREE.MeshPhysicalMaterial({ color: 0x4a3426, roughness: .35, clearcoat: .8, transparent: true, opacity: .55, depthWrite: false });
+  const tipG = new THREE.ConeGeometry(.034, .1, 20); tipG.rotateX(Math.PI); tipG.translate(0, .05, 0);
+  const tip = new THREE.Mesh(tipG, new THREE.MeshPhysicalMaterial({ color: 0x3a281d, roughness: .3, clearcoat: .8 }));
+  const shG = new THREE.CylinderGeometry(.034, .034, 4, 24, 1, true); shG.translate(0, 2.1, 0);
+  const sheath = new THREE.Mesh(shG, sheathMat); sheath.renderOrder = 4; sheath.castShadow = true;
+  bloodCol.position.y = .08; bloodCol.scale.y = .0001;
+  needle.add(tip, sheath, bloodCol); sceneB.add(needle);
+
+  // saliva particles
+  const RS = rng(31), salG = new THREE.SphereGeometry(1, 14, 10);
+  for (let i = 0; i < 38; i++) {
+    const m = new THREE.Mesh(salG, new THREE.MeshPhysicalMaterial({ color: 0x9fe870, emissive: 0x2a6a10, roughness: .2, transparent: true, opacity: 0, depthWrite: false, clearcoat: 1 }));
+    m.renderOrder = 6; m.userData = { b: 8.9 + (i / 38) * 1.9, dx: (RS() - .5) * 2, dy: (RS() - .5), dz: (RS() - .5), s: .022 + RS() * .025 };
+    sceneB.add(m); saliva.push(m);
+  }
+  // cells sucked up
+  for (let i = 0; i < 18; i++) {
+    const m = new THREE.Mesh(rbcG, rbcM);
+    m.userData = { b: 11.0 + i * .17, dx: (RS() - .5) * .5, dy: (RS() - .5) * .3, ax: V(RS(), RS(), RS()).normalize() };
+    m.visible = false; sceneB.add(m); suck.push(m);
+  }
+}
+
+/* ================= captions ================= */
+const CAPS = [
+  [0.15, 3.2, 'นี่คือสิ่งที่เกิดขึ้น', 'เมื่อยุงกัดคุณ'],
+  [3.2, 6.2, 'ยุงใช้ปากแหลมเหมือนเข็ม', 'เจาะทะลุผิวหนัง'],
+  [6.2, 8.8, 'แล้วควานหา', 'เส้นเลือดฝอย'],
+  [8.8, 11.0, 'ปล่อยน้ำลายเข้าไป', 'ให้เลือดไม่แข็งตัว'],
+  [11.0, 14.2, 'จากนั้นก็ดูดเลือด', 'ขึ้นไปเรื่อย ๆ'],
+  [14.2, 16.6, 'จนท้องป่อง', 'หนักกว่าตัวเองได้ถึง 3 เท่า!'],
+  [16.6, 20.1, 'ร่างกายแพ้น้ำลายยุง', 'เกิดเป็นตุ่มแดง และคัน!'],
+];
+const l1 = document.getElementById('l1'), l2 = document.getElementById('l2');
+let capIdx = -2;
+function updateCaption(t) {
+  const i = CAPS.findIndex((c) => t >= c[0] && t < c[1]);
+  if (i !== capIdx) {
+    capIdx = i; l1.textContent = i >= 0 ? CAPS[i][2] : ''; l2.textContent = i >= 0 ? CAPS[i][3] : '';
+    const cap = document.getElementById('cap');
+    for (const el of [l1, l2]) { el.style.fontSize = ''; const over = el.scrollWidth / cap.clientWidth; if (over > 1) el.style.fontSize = `calc(8.6cqw / ${over * 1.04})`; }
+  }
+  if (i < 0) return;
+  [l1, l2].forEach((el, k) => {
+    const a = clamp((t - CAPS[i][0] - .05 - k * .5) / .22);
+    el.style.opacity = a > 0 ? 1 : 0;
+    el.style.transform = `scale(${a > 0 ? easeOutBack(a) * .9 + .1 : 0})`;
+  });
+}
+
+/* ================= timeline ================= */
+const CUTS = [0, 3.2, 6.2, 14.2, 16.6];
+function shake(t, amt) { return V(Math.sin(t * 1.3) + .5 * Math.sin(t * 3.1 + 1), Math.sin(t * 1.7 + 2) + .5 * Math.sin(t * 2.7), Math.sin(t * 1.1 + 4)).multiplyScalar(amt); }
+function setCam(pos, look, fov, t, cutT, amt) {
+  const punch = 1 + .07 * (1 - ss(0, .35, t - cutT));
+  camera.position.copy(pos).add(shake(t, amt)); camera.lookAt(look);
+  camera.fov = fov * punch; camera.updateProjectionMatrix();
+}
+const tmpQ = new THREE.Quaternion(), tmpM = new THREE.Matrix4();
+
+function update(t) {
+  const shot = t < 3.2 ? 1 : t < 6.2 ? 2 : t < 14.2 ? 3 : t < 16.6 ? 4 : 5;
+  const cutT = CUTS[shot - 1];
+
+  /* ---- mosquito (scene A) ---- */
+  const r = BITE.y;
+  let fly = 0, pos = BITE.clone(), yaw = 0, pitch = 0;
+  if (t < 2.85) {
+    const u = 1 - (1 - clamp(t / 2.8)) ** 2.4;
+    const S = V(2.0, r + 1.9, -1.4), C = V(1.1, r + .25, .9);
+    pos = S.clone().multiplyScalar((1 - u) ** 2).addScaledVector(C, 2 * u * (1 - u)).addScaledVector(BITE, u * u);
+    pos.add(V(Math.sin(t * 7) * .07, Math.sin(t * 9.3) * .05, Math.cos(t * 6.1) * .07).multiplyScalar(1 - u));
+    yaw = lerp(.9, 0, u) + Math.sin(t * 5) * .15 * (1 - u); pitch = .18 * (1 - u);
+    fly = 1 - ss(2.6, 2.85, t);
+  }
+  if (t > 17.05) {
+    const v = clamp((t - 17.05) / 1.5);
+    pos = BITE.clone().add(V(1.8 * v * v + .25 * v, 1.3 * v ** 1.6 + .02 * Math.sin(t * 8), -.5 * v));
+    yaw = -.4 * v; pitch = .1; fly = ss(17.0, 17.2, t);
+  }
+  mosq.root.position.copy(pos); mosq.root.rotation.set(0, yaw, pitch);
+  setWings(mosq, t, fly);
+  const probA = t < 3.6 ? 1.15 : t < 4.4 ? lerp(1.15, .3, ss(3.6, 4.4, t)) : t < 16.6 ? .3 : lerp(.3, 1.15, ss(16.6, 17.0, t));
+  mosq.probPivot.rotation.z = probA;
+  const feeding = ss(4.4, 4.8, t) * (1 - ss(16.6, 16.9, t));
+  mosq.body.position.y = -.014 * feeding + .005 * Math.sin(t * 16) * (ss(4.4, 4.6, t) - ss(5.6, 5.9, t));
+  mosq.body.rotation.z = -.07 * feeding;
+  const sw = ss(12.6, 16.4, t);
+  mosq.abdomen.scale.set(1 + .85 * sw, 3 + .5 * sw, .9 + .8 * sw);
+  mosq.abdMat.color.setRGB(1, lerp(1, .38, sw), lerp(1, .36, sw));
+  mosq.abdMat.emissiveIntensity = .55 * sw;
+  biteU.uDot.value = ss(4.6, 5.0, t);
+  biteU.uBump.value = Math.max(0, easeOutBack(clamp((t - 17.4) / 1.6)));
+  biteU.uRed.value = ss(17.2, 18.8, t);
+
+  /* ---- scene B ---- */
+  if (shot === 3) {
+    let tipY = t < 6.6 ? lerp(.75, 0, ss(6.2, 6.6, t)) : lerp(0, VES_Y + .06, ss(6.6, 8.6, t));
+    const probe = Math.sin((t - 6.6) * 4.5) * .07 * (ss(6.6, 6.9, t) - ss(7.9, 8.6, t));
+    const tipX = .08 + probe;
+    needle.position.set(tipX, tipY, .06); needle.rotation.z = -probe * .6;
+    const fill = ss(11.2, 13.8, t); bloodCol.scale.y = Math.max(.0001, fill * 3.6);
+
+    const P = cells.userData.p;
+    P.forEach((c, i) => {
+      const x = ((c.x0 + c.sp * t) % 5) - 2.5;
+      tmpQ.setFromAxisAngle(c.ax, c.ph + c.rs * t);
+      tmpM.compose(V(x, VES_Y + c.r * Math.cos(c.a), c.r * Math.sin(c.a)), tmpQ, V(1, 1, 1));
+      cells.setMatrixAt(i, tmpM);
+    });
+    cells.instanceMatrix.needsUpdate = true;
+
+    const fade = 1 - ss(12.2, 13.6, t);
+    for (const m of saliva) {
+      const d = m.userData, age = t - d.b;
+      if (age < 0) { m.visible = false; continue; }
+      m.visible = true;
+      const spread = 1 - Math.exp(-age * 1.6);
+      m.position.set(tipX + d.dx * .45 * spread + .1 * age, tipY - .02 + d.dy * .32 * spread, .02 + d.dz * .3 * spread);
+      m.scale.setScalar(d.s * ss(0, .25, age) * (1 + .4 * spread));
+      m.material.opacity = .85 * fade;
+    }
+    for (const m of suck) {
+      const d = m.userData, age = t - d.b;
+      if (age < 0) { m.visible = false; continue; }
+      m.visible = true;
+      const tipP = V(tipX, tipY + .03, .06);
+      if (age < .45) { m.position.copy(lerpV(V(tipX + .35 + d.dx, VES_Y + d.dy, 0), tipP, ss(0, .45, age))); m.scale.setScalar(lerp(1, .42, ss(0, .45, age))); }
+      else { m.position.copy(tipP).add(V(0, (age - .45) * 1.25, 0)); m.scale.setScalar(.42); }
+      m.quaternion.setFromAxisAngle(d.ax, age * 4);
+    }
+  }
+
+  /* ---- cameras ---- */
+  if (shot === 1) {
+    const u = ss(0, 3.2, t);
+    const look = lerpV(V(.3, r + .45, -.3), V(.06, r + .12, 0), u).lerp(pos, .25);
+    setCam(lerpV(V(.95, r + 1.45, 3.1), V(.55, r + .95, 2.25), u), look, 38, t, cutT, .012);
+  } else if (shot === 2) {
+    const u = ss(3.2, 6.2, t);
+    setCam(lerpV(V(.42, r + .2, 1.0), V(.36, r + .16, .82), u), V(.17, r + .08, 0), 30, t, cutT, .003);
+  } else if (shot === 3) {
+    const u1 = ss(6.2, 11, t), u2 = ss(11, 14.2, t);
+    const p = lerpV(V(.4, .1, 3.3), V(.15, -.45, 2.35), u1).lerp(V(.25, -.15, 2.6), u2);
+    const l = lerpV(V(.1, -.4, 0), V(.1, -.8, 0), u1).lerp(V(.1, -.42, 0), u2);
+    setCam(p, l, 40, t, cutT, .01);
+  } else if (shot === 4) {
+    const u = ss(14.2, 16.6, t);
+    setCam(lerpV(V(.1, r + .36, 1.5), V(.05, r + .36, 1.5), u), V(-.15, r + .19, 0), 30, t, cutT, .003);
+  } else {
+    const u = ss(16.6, 19.6, t);
+    setCam(lerpV(V(.6, r + .55, 1.7), V(.32, r + .2, .95), u), lerpV(V(.12, r + .2, 0), V(0, r + .06, 0), u), 34, t, cutT, .006);
+  }
+
+  updateCaption(t);
+  renderer.render(shot === 3 ? sceneB : sceneA, camera);
+}
+
+/* ================= sizing / loop ================= */
+const stage = document.getElementById('stage');
+function resize() { const w = stage.clientWidth, h = stage.clientHeight; renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); }
+new ResizeObserver(resize).observe(stage); resize();
+
+window.renderAt = (t) => update(t);
+window.ready = document.fonts.ready.then(() => { update(0); return true; });
+
+if (!RENDER) {
+  const bar = document.getElementById('bar'), hint = document.getElementById('hint');
+  let playing = true, t0 = performance.now(), tp = 0;
+  stage.addEventListener('click', () => { playing = !playing; if (playing) t0 = performance.now() - tp * 1000; hint.style.opacity = playing ? 0 : 1; });
+  setTimeout(() => (hint.style.opacity = 0), 2500);
+  renderer.setAnimationLoop(() => {
+    if (!playing) return;
+    tp = ((performance.now() - t0) / 1000) % (DUR + .8);
+    const t = Math.min(tp, DUR - .001);
+    bar.style.width = (t / DUR * 100) + '%';
+    update(t);
+  });
+}
+</script>
+</body>
+</html>
