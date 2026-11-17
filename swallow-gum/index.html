@@ -44,6 +44,7 @@
 <script type="module">
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { DecalGeometry } from 'three/addons/geometries/DecalGeometry.js';
 
 const RENDER = new URLSearchParams(location.search).has('render');
 if (RENDER) document.body.classList.add('render');
@@ -112,6 +113,34 @@ const irisTex = canvasTex(128, 128, (ctx, w) => {
   ctx.strokeStyle = 'rgba(200,230,255,.25)'; for (let a = 0; a < 6.28; a += .2) { ctx.beginPath(); ctx.moveTo(c + Math.cos(a) * 22, c + Math.sin(a) * 22); ctx.lineTo(c + Math.cos(a) * 52, c + Math.sin(a) * 52); ctx.stroke(); }
 });
 
+/* ---------------- brand logo ("Pla Remix" on cap + shirt) ---------------- */
+const logoJobs = [];
+function logoTex(w, h, draw) { const t = canvasTex(w, h, draw); t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; logoJobs.push(() => { const c = t.image, ctx = c.getContext('2d'); ctx.clearRect(0, 0, c.width, c.height); draw(ctx, c.width, c.height); t.needsUpdate = true; }); return t; }
+const capLogo = logoTex(512, 256, (ctx, w, h) => {
+  ctx.clearRect(0, 0, w, h); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.font = '900 92px Montserrat, Arial Black'; ctx.lineWidth = 10; ctx.strokeStyle = '#0e1626'; ctx.fillStyle = '#f2efe6';
+  ctx.strokeText('PLA', w / 2, h * .32); ctx.fillText('PLA', w / 2, h * .32);
+  ctx.font = '900 70px Montserrat, Arial Black'; ctx.fillStyle = '#ffc61a'; ctx.strokeText('REMIX', w / 2, h * .72); ctx.fillText('REMIX', w / 2, h * .72);
+  ctx.globalCompositeOperation = 'destination-out'; ctx.strokeStyle = 'rgba(0,0,0,.18)'; ctx.lineWidth = 1.5;
+  for (let y = 0; y < h; y += 5) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y + 3); ctx.stroke(); } // stitched look
+  ctx.globalCompositeOperation = 'source-over';
+});
+const shirtLogo = logoTex(512, 160, (ctx, w, h) => {
+  ctx.clearRect(0, 0, w, h); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = 'rgba(255,240,225,.92)'; ctx.font = '900 84px Montserrat, Arial Black'; ctx.fillText('PLA REMIX', w / 2, h * .46);
+  ctx.fillRect(w * .12, h * .82, w * .76, 7);
+  ctx.globalCompositeOperation = 'destination-out'; const R = rng(12); // worn screen-print
+  for (let i = 0; i < 900; i++) { ctx.fillStyle = `rgba(0,0,0,${.2 + R() * .5})`; ctx.fillRect(R() * w, R() * h, 2 + R() * 3, 2 + R() * 3); }
+  ctx.globalCompositeOperation = 'source-over';
+});
+const decalMat = (map, rough = .8) => new THREE.MeshStandardMaterial({ map, transparent: true, roughness: rough, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4 });
+function addDecal(target, parent, pos, rot, size, mat) {
+  target.updateWorldMatrix(true, false); parent.updateWorldMatrix(true, false);
+  const g = new DecalGeometry(target, pos, new THREE.Euler(...rot), size);
+  g.applyMatrix4(parent.matrixWorld.clone().invert());
+  const m = new THREE.Mesh(g, mat); m.userData.decal = true; m.renderOrder = 2; parent.add(m); return m;
+}
+
 /* ---------------- materials ---------------- */
 const M = {
   skin: new THREE.MeshPhysicalMaterial({ color: 0xe3a882, roughness: .5, bumpMap: skinBump, bumpScale: .15, sheen: .5, sheenColor: new THREE.Color(0xffb59a), sheenRoughness: .5, clearcoat: .06 }),
@@ -122,6 +151,7 @@ const M = {
   iris: new THREE.MeshPhysicalMaterial({ map: irisTex, transparent: true, roughness: .05, clearcoat: 1 }),
   brow: new THREE.MeshStandardMaterial({ color: 0x5a3a1d, roughness: .9 }),
   hair: new THREE.MeshPhysicalMaterial({ map: hairTex, roughness: .55, sheen: 1, sheenColor: new THREE.Color(0xd9a15c), sheenRoughness: .4, bumpMap: hairTex, bumpScale: 1 }),
+  cap: new THREE.MeshPhysicalMaterial({ color: 0x1b2740, roughness: .85, sheen: .8, sheenColor: new THREE.Color(0x6f86b0), sheenRoughness: .5, bumpMap: skinBump, bumpScale: .5 }),
   shirt: new THREE.MeshPhysicalMaterial({ color: 0xb02a20, roughness: .8, sheen: 1, sheenColor: new THREE.Color(0xff7a60), sheenRoughness: .6, bumpMap: skinBump, bumpScale: .4 }),
 };
 
@@ -194,8 +224,7 @@ function makeHuman() {
 
   // hair: two smooth caps hugging the skull + side-swept fringe
   { const cap = (r, th, sy, rx, y, z) => { const m = add(head, new THREE.Mesh(new THREE.SphereGeometry(r, 64, 40, 0, Math.PI * 2, 0, th), M.hair)); m.scale.set(1, sy, 1); m.rotation.x = rx; m.position.set(0, y, z); return m; };
-    cap(.111, 1.42, 1.14, -.58, .006, -.008);
-    cap(.115, .95, 1.13, -.22, .014, -.008);
+    cap(.107, 1.85, 1.16, -.8, .002, -.012);
   }
   // neck, torso
   const neck = add(root, new THREE.Mesh(new THREE.CylinderGeometry(.048, .055, .16, 32), M.skin)); neck.position.set(0, 1.49, -.01);
@@ -206,6 +235,17 @@ function makeHuman() {
     const arm = add(root, new THREE.Mesh(new THREE.CapsuleGeometry(.05, .4, 8, 24), M.shirt)); arm.position.set(s * .245, 1.16, -.01); arm.rotation.z = s * .06;
   }
   const collar = add(root, new THREE.Mesh(new THREE.TorusGeometry(.056, .011, 12, 48), M.shirt)); collar.rotation.x = Math.PI / 2 - .25; collar.position.set(0, 1.432, .0);
+
+  // baseball cap with stitched "PLA REMIX"
+  const crown = add(head, new THREE.Mesh(new THREE.SphereGeometry(.116, 64, 32, 0, Math.PI * 2, 0, Math.PI / 2), M.cap));
+  crown.scale.set(1.0, .86, 1.04); crown.position.set(0, .056, -.006); crown.rotation.x = -.1;
+  const band = add(head, new THREE.Mesh(new THREE.CylinderGeometry(.117, .118, .012, 64, 1, true), M.cap)); band.scale.set(1, 1, 1.04); band.position.set(0, .054, -.006); band.rotation.x = -.1;
+  const brimG = new THREE.CylinderGeometry(.095, .095, .006, 48, 1, false, -Math.PI / 2, Math.PI); brimG.scale(1.05, 1, 1.1);
+  const brim = add(head, new THREE.Mesh(brimG, M.cap)); brim.position.set(0, .058, .07); brim.rotation.x = .16;
+  const button = add(head, new THREE.Mesh(new THREE.SphereGeometry(.009, 12, 8), M.cap)); button.position.set(0, .156, -.018);
+  root.updateMatrixWorld(true);
+  addDecal(crown, head, head.localToWorld(V(0, .104, .104)), [-.5, 0, 0], V(.105, .052, .08), decalMat(capLogo, .7));
+  addDecal(torso, root, V(.068, 1.36, .1), [0, .25, 0], V(.075, .024, .06), decalMat(shirtLogo, .9));
 
   return { root, head, eyes, lids, brows, setMouth, adam, all, mouth };
 }
@@ -277,7 +317,7 @@ const xrayMat = new THREE.ShaderMaterial({
   vertexShader: `varying vec3 vN; varying vec3 vV; void main(){ vec4 mv = modelViewMatrix * vec4(position,1.); vN = normalize(normalMatrix*normal); vV = normalize(-mv.xyz); gl_Position = projectionMatrix*mv; }`,
   fragmentShader: `uniform vec3 uColor; varying vec3 vN; varying vec3 vV; void main(){ float f = pow(1. - abs(dot(normalize(vN), normalize(vV))), 2.2); gl_FragColor = vec4(uColor * (0.05 + f * 0.9), 1.); }`,
 });
-const ghost = makeHuman(); ghost.all.forEach((m) => { m.material = xrayMat; m.castShadow = false; }); ghost.setMouth = () => {}; ghost.mouth.visible = false;
+const ghost = makeHuman(); ghost.all.forEach((m) => { m.material = xrayMat; m.castShadow = false; }); ghost.root.traverse((o) => { if (o.userData.decal) o.visible = false; }); ghost.setMouth = () => {}; ghost.mouth.visible = false;
 sceneB.add(ghost.root);
 {
   sceneB.add(new THREE.HemisphereLight(0xbfe4ff, 0x301020, 1.2));
@@ -420,7 +460,7 @@ function update(t) {
     setCam(g.clone().add(V(.12, .05, lerp(.55, .42, u))), g.clone().lerp(V(0, .9, .04), .45), 36, t, cutT, .004);
   } else {
     const u = ss(16.8, 20, t);
-    setCam(lerpV(V(-.06, 1.58, .95), V(-.02, 1.575, .72), u), V(0, 1.56, 0), 30, t, cutT, .004);
+    setCam(lerpV(V(-.06, 1.57, 1.0), V(-.02, 1.56, .86), u), V(0, 1.54, 0), 30, t, cutT, .004);
   }
 
   updateWord(t);
@@ -433,7 +473,7 @@ function resize() { const w = stage.clientWidth, h = stage.clientHeight; rendere
 new ResizeObserver(resize).observe(stage); resize();
 
 window.renderAt = (t) => update(t);
-window.ready = document.fonts.ready.then(() => { buildParkBg(); update(0); return true; });
+window.ready = document.fonts.load('900 64px Montserrat').catch(() => {}).then(() => document.fonts.ready).then(() => { logoJobs.forEach((j) => j()); buildParkBg(); update(0); return true; });
 
 if (!RENDER) {
   const bar = document.getElementById('bar'), hint = document.getElementById('hint'), vo = document.getElementById('vo');
